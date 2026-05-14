@@ -12,6 +12,10 @@ Usage:
 User-editable inputs are intentionally limited to terminal output content and
 the output file path. Canvas size, font, colors, status line, input box style,
 and bottom model/token information are locked by this script for consistency.
+Do not add command-line options that let callers override the visual style,
+prompt symbol, status line, model name, token usage, or timing metadata. Users
+should only provide the simulated terminal output text; footer metadata is
+randomized internally from a constrained, realistic range.
 """
 
 from __future__ import annotations
