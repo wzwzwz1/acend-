@@ -9,18 +9,15 @@ Usage:
   python3 terminal_screenshot.py --text "Hello\n世界" --output terminal.png
   python3 terminal_screenshot.py --input content.txt --output terminal.png
 
-Useful options:
-  --width 1600            Set image width in pixels.
-  --height 1200           Set a fixed image height; long output is clipped.
-  --font-size 28          Adjust terminal text size.
-  --font /path/font.ttf   Use a specific monospace font.
-  --status "..."          Customize the centered status line.
-  --model "..."           Customize the bottom model/token line.
+User-editable inputs are intentionally limited to terminal output content and
+the output file path. Canvas size, font, colors, status line, input box style,
+and bottom model/token information are locked by this script for consistency.
 """
 
 from __future__ import annotations
 
 import argparse
+import random
 import textwrap
 import unicodedata
 from pathlib import Path
@@ -47,8 +44,17 @@ class TerminalTheme:
         self.cursor = cursor
 
 
-DEFAULT_STATUS = "✓ Shipped · 3 rounds · 2 tools · 70.4s · 4900 tokens"
-DEFAULT_MODEL = "deepseek-v4-flash · ~ · 20.5k/64k tok"
+CANVAS_WIDTH = 1788
+FONT_SIZE = 27
+PADDING_X = 38
+PADDING_TOP = 18
+LINE_GAP = 7
+PROMPT_SYMBOL = "›"
+
+MODEL_CHOICES = (
+    ("deepseek", "deepseek-v4-flash", 64_000),
+    ("glm-5.1", "glm-5.1", 128_000),
+)
 
 
 FONT_CANDIDATES = (
@@ -66,6 +72,56 @@ CJK_FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
 )
+
+
+class TerminalMetadata:
+    def __init__(
+        self,
+        *,
+        status_line: str,
+        model_line: str,
+        model_name: str,
+        tokens: int,
+        rounds: int,
+        tools: int,
+        elapsed_seconds: float,
+    ) -> None:
+        self.status_line = status_line
+        self.model_line = model_line
+        self.model_name = model_name
+        self.tokens = tokens
+        self.rounds = rounds
+        self.tools = tools
+        self.elapsed_seconds = elapsed_seconds
+
+
+def _format_token_count(tokens: int) -> str:
+    return f"{tokens / 1000:.1f}k"
+
+
+def generate_terminal_metadata(rng: random.Random | None = None) -> TerminalMetadata:
+    """Generate realistic locked footer metadata for each screenshot."""
+
+    random_source = rng or random.SystemRandom()
+    model_name, model_label, context_limit = random_source.choice(MODEL_CHOICES)
+    max_consumed = min(64_000, context_limit - 8_000)
+    tokens = random_source.randint(8_000, max_consumed)
+    rounds = random_source.randint(1, 6)
+    tools = random_source.randint(1, 8)
+    elapsed_seconds = round(random_source.uniform(8.0, 180.0), 1)
+    status_tokens = random_source.randint(1_800, 9_800)
+
+    status_line = f"✓ Shipped · {rounds} rounds · {tools} tools · {elapsed_seconds:.1f}s · {status_tokens} tokens"
+    model_line = f"{model_label} · ~ · {_format_token_count(tokens)}/{context_limit // 1000}k tok"
+    return TerminalMetadata(
+        status_line=status_line,
+        model_line=model_line,
+        model_name=model_name,
+        tokens=tokens,
+        rounds=rounds,
+        tools=tools,
+        elapsed_seconds=elapsed_seconds,
+    )
 
 
 def _first_existing(paths: Iterable[str]) -> str | None:
@@ -169,27 +225,17 @@ def draw_mixed_text(
 def render_terminal_screenshot(
     text: str,
     output: str | Path,
-    *,
-    width: int = 1788,
-    height: int | None = None,
-    font_size: int = 27,
-    padding_x: int = 38,
-    padding_top: int = 18,
-    line_gap: int = 7,
-    font_path: str | None = None,
-    status: str = DEFAULT_STATUS,
-    model: str = DEFAULT_MODEL,
-    prompt_symbol: str = "›",
-    theme: TerminalTheme = TerminalTheme(),
 ) -> Path:
     """Render terminal output to a PNG image and return the output path."""
 
-    ascii_font, cjk_font = load_font(font_size, font_path)
-    small_ascii, small_cjk = load_font(max(18, font_size - 3), font_path)
-    line_height = _line_height(ascii_font, cjk_font, line_gap)
-    small_line_height = _line_height(small_ascii, small_cjk, max(4, line_gap - 2))
+    theme = TerminalTheme()
+    metadata = generate_terminal_metadata()
+    ascii_font, cjk_font = load_font(FONT_SIZE)
+    small_ascii, small_cjk = load_font(max(18, FONT_SIZE - 3))
+    line_height = _line_height(ascii_font, cjk_font, LINE_GAP)
+    small_line_height = _line_height(small_ascii, small_cjk, max(4, LINE_GAP - 2))
 
-    content_width = width - padding_x * 2
+    content_width = CANVAS_WIDTH - PADDING_X * 2
     lines = wrap_terminal_text(text, content_width, ascii_font, cjk_font)
 
     output_height = len(lines) * line_height
@@ -199,7 +245,7 @@ def render_terminal_screenshot(
     model_height = small_line_height + 26
     bottom_padding = 10
     computed_height = (
-        padding_top
+        PADDING_TOP
         + output_height
         + divider_gap
         + status_height
@@ -208,41 +254,50 @@ def render_terminal_screenshot(
         + model_height
         + bottom_padding
     )
-    canvas_height = height or computed_height
+    canvas_height = computed_height
 
-    image = Image.new("RGB", (width, canvas_height), theme.background)
+    image = Image.new("RGB", (CANVAS_WIDTH, canvas_height), theme.background)
     draw = ImageDraw.Draw(image)
 
-    y = padding_top
+    y = PADDING_TOP
     visible_bottom = canvas_height - (status_height + 18 + input_height + model_height + bottom_padding)
     for line in lines:
         if y + line_height > visible_bottom:
             break
-        draw_mixed_text(draw, (padding_x, y), line, ascii_font, cjk_font, theme.foreground)
+        draw_mixed_text(draw, (PADDING_X, y), line, ascii_font, cjk_font, theme.foreground)
         y += line_height
 
     footer_top = max(y + divider_gap, canvas_height - (status_height + 18 + input_height + model_height + bottom_padding))
     status_y = footer_top + 5
-    status_width = _text_width(status, small_ascii, small_cjk)
-    status_x = max(padding_x, (width - status_width) // 2)
+    status_width = _text_width(metadata.status_line, small_ascii, small_cjk)
+    status_x = max(PADDING_X, (CANVAS_WIDTH - status_width) // 2)
     line_y = status_y + small_line_height // 2 + 3
 
-    draw.line((padding_x, line_y, max(padding_x, status_x - 16), line_y), fill=theme.subtle, width=2)
-    draw.line((min(width - padding_x, status_x + status_width + 16), line_y, width - padding_x, line_y), fill=theme.subtle, width=2)
-    draw_mixed_text(draw, (status_x, status_y), status, small_ascii, small_cjk, theme.dim)
+    draw.line((PADDING_X, line_y, max(PADDING_X, status_x - 16), line_y), fill=theme.subtle, width=2)
+    draw.line(
+        (
+            min(CANVAS_WIDTH - PADDING_X, status_x + status_width + 16),
+            line_y,
+            CANVAS_WIDTH - PADDING_X,
+            line_y,
+        ),
+        fill=theme.subtle,
+        width=2,
+    )
+    draw_mixed_text(draw, (status_x, status_y), metadata.status_line, small_ascii, small_cjk, theme.dim)
 
     input_top = footer_top + status_height + 18
-    draw.line((8, input_top, width - 8, input_top), fill=theme.accent, width=2)
-    draw.line((8, input_top + input_height, width - 8, input_top + input_height), fill=theme.accent, width=2)
+    draw.line((8, input_top, CANVAS_WIDTH - 8, input_top), fill=theme.accent, width=2)
+    draw.line((8, input_top + input_height, CANVAS_WIDTH - 8, input_top + input_height), fill=theme.accent, width=2)
 
     prompt_y = input_top + (input_height - line_height) // 2 - 1
-    draw_mixed_text(draw, (10, prompt_y), prompt_symbol, ascii_font, cjk_font, theme.accent)
+    draw_mixed_text(draw, (10, prompt_y), PROMPT_SYMBOL, ascii_font, cjk_font, theme.accent)
     cursor_x = 38
     cursor_y = input_top + 15
     draw.rectangle((cursor_x, cursor_y, cursor_x + 15, cursor_y + 30), fill=theme.cursor)
 
     model_y = input_top + input_height + 16
-    draw_mixed_text(draw, (padding_x, model_y), model, small_ascii, small_cjk, theme.dim)
+    draw_mixed_text(draw, (PADDING_X, model_y), metadata.model_line, small_ascii, small_cjk, theme.dim)
 
     output_path = Path(output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -266,20 +321,13 @@ def build_parser() -> argparse.ArgumentParser:
             """\
             Examples:
               python terminal_screenshot.py --text "Hello\\n世界" --output terminal.png
-              python terminal_screenshot.py --input output.txt --output terminal.png --width 1600
+              python terminal_screenshot.py --input output.txt --output terminal.png
             """
         ),
     )
     parser.add_argument("--text", help="Text to render. Use shell quoting for newlines when needed.")
     parser.add_argument("--input", help="UTF-8 text file to render.")
     parser.add_argument("--output", default="terminal_screenshot.png", help="Output PNG path.")
-    parser.add_argument("--width", type=int, default=1788, help="Image width in pixels.")
-    parser.add_argument("--height", type=int, help="Optional fixed image height. Long output is clipped.")
-    parser.add_argument("--font-size", type=int, default=27, help="Main terminal font size.")
-    parser.add_argument("--font", help="Optional path to a preferred monospace font.")
-    parser.add_argument("--status", default=DEFAULT_STATUS, help="Centered status line above the input box.")
-    parser.add_argument("--model", default=DEFAULT_MODEL, help="Dim model/token line at the bottom.")
-    parser.add_argument("--prompt-symbol", default="›", help="Prompt symbol shown in the input area.")
     return parser
 
 
@@ -287,17 +335,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     text = _read_text(args)
-    output = render_terminal_screenshot(
-        text,
-        args.output,
-        width=args.width,
-        height=args.height,
-        font_size=args.font_size,
-        font_path=args.font,
-        status=args.status,
-        model=args.model,
-        prompt_symbol=args.prompt_symbol,
-    )
+    output = render_terminal_screenshot(text, args.output)
     print(output)
 
 
